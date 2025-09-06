@@ -17,14 +17,8 @@ The OpenAPI generator provides three levels of customization:
 // In your main.go
 import "github.com/zainokta/openapi-gen"
 
-// Create config
-cfg := openapi.NewConfig()
-cfg.Title = "Your API"
-cfg.Description = "Your API description"
-cfg.Version = "1.0.0"
-
-// One line to enable docs
-err := openapi.EnableDocs(framework, httpServer, cfg, logger)
+// Minimal setup with defaults
+err := openapi.EnableDocs(framework, httpServer)
 if err != nil {
     // handle error
 }
@@ -34,6 +28,44 @@ if err != nil {
 - **Swagger UI**: `http://localhost:8080/docs`
 - **OpenAPI Spec**: `http://localhost:8080/openapi.json`
 
+### Custom Configuration
+```go
+import (
+    "log/slog"
+    "os"
+    "github.com/zainokta/openapi-gen"
+)
+
+// Custom config and logger
+cfg := openapi.NewConfig()
+cfg.Title = "Your API"
+cfg.Description = "Your API description" 
+cfg.Version = "1.0.0"
+
+// Option 1: Use slog (recommended, convenience function)
+logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+err := openapi.EnableDocs(framework, httpServer,
+    openapi.WithConfig(cfg),
+    openapi.WithSlogLogger(logger),  // Convenience function for slog
+)
+
+// Option 2: Use any custom logger implementing Logger interface
+type MyLogger struct{}
+func (l *MyLogger) Info(msg string, args ...any) { /* your implementation */ }
+func (l *MyLogger) Warn(msg string, args ...any) { /* your implementation */ }
+func (l *MyLogger) Error(msg string, args ...any) { /* your implementation */ }
+func (l *MyLogger) Debug(msg string, args ...any) { /* your implementation */ }
+
+err = openapi.EnableDocs(framework, httpServer,
+    openapi.WithConfig(cfg),
+    openapi.WithLogger(&MyLogger{}),  // Any logger implementing the interface
+)
+
+if err != nil {
+    // handle error
+}
+```
+
 ### Advanced Integration with Customization
 ```go
 import (
@@ -41,21 +73,43 @@ import (
     "github.com/zainokta/openapi-gen/example"
 )
 
-// Enable with custom configuration
-err := openapi.EnableDocs(framework, httpServer, cfg, logger, 
-    func(generator *openapi.Generator) error {
-        // Apply multiple customizations
-        if err := example.CustomizeAuthentication(generator); err != nil {
-            return err
-        }
-        if err := example.CustomizeMFA(generator); err != nil {
-            return err
-        }
-        return example.CustomizeOAuth(generator)
-    })
+// Multiple customizations with options pattern
+err := openapi.EnableDocs(framework, httpServer,
+    openapi.WithConfig(cfg),
+    openapi.WithLogger(logger),
+    openapi.WithCustomizer(example.CustomizeAuthentication),
+    openapi.WithCustomizer(example.CustomizeMFA),
+    openapi.WithCustomizer(example.CustomizeOAuth),
+)
 if err != nil {
     // handle error
 }
+```
+
+### Custom Framework Integration
+```go
+import "github.com/zainokta/openapi-gen"
+
+// Implement custom route discoverer for your framework
+type MyFrameworkDiscoverer struct {
+    framework *MyFramework
+}
+
+func (d *MyFrameworkDiscoverer) DiscoverRoutes() ([]spec.RouteInfo, error) {
+    // Your custom route discovery logic
+    return routes, nil
+}
+
+func (d *MyFrameworkDiscoverer) GetFrameworkName() string {
+    return "MyFramework"
+}
+
+// Use with custom discoverer
+discoverer := &MyFrameworkDiscoverer{framework: myFramework}
+err := openapi.EnableDocs(myFramework, httpServer,
+    openapi.WithRouteDiscoverer(discoverer),
+    openapi.WithCustomizer(example.CustomizeAuthentication),
+)
 ```
 
 ## What Gets Generated
@@ -76,7 +130,7 @@ Presets improve the algorithmic results:
 | Route | Enhanced Tags | Enhanced Summary | Enhanced Description |
 |-------|---------------|------------------|----------------------|
 | `POST /api/v1/auth/login` | `authentication` | `User Authentication` | `Authenticate user and return authentication tokens` |
-| `GET /health` | `system, monitoring` | `Service Health Check` | `Get comprehensive service health status...` |
+| `GET /health` | `system` | `Service Health Check` | `Get comprehensive service health status...` |
 
 ### With Custom Overrides
 Your custom functions can provide perfect documentation:
@@ -122,8 +176,63 @@ om.OverrideTags("auth", "authentication")
 
 - **Zero Runtime Cost**: Documentation is generated once on startup
 - **Development Mode**: Spec regenerated on each request for live updates
-- **Production Mode**: Spec cached after first generation
-- **Memory Usage**: ~100KB for typical auth service with 20+ endpoints
+
+## Logging Options
+
+The OpenAPI generator supports flexible logging through a generic Logger interface, allowing integration with any logging framework.
+
+### Built-in Logger Support
+
+```go
+// Default behavior - uses slog.Default()
+err := openapi.EnableDocs(framework, httpServer)
+
+// Custom slog logger (convenience function)
+logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+    Level: slog.LevelDebug,
+}))
+err := openapi.EnableDocs(framework, httpServer,
+    openapi.WithSlogLogger(logger),
+)
+
+// No-op logger (silent operation)
+err := openapi.EnableDocs(framework, httpServer,
+    openapi.WithLogger(&openapi.NoOpLogger{}),
+)
+```
+
+### Custom Logger Integration
+
+Implement the Logger interface for any logging framework:
+
+```go
+// Example with Logrus (hypothetical adapter)
+type LogrusAdapter struct {
+    logger *logrus.Logger
+}
+
+func (l *LogrusAdapter) Info(msg string, args ...any) {
+    l.logger.WithFields(argsToFields(args)).Info(msg)
+}
+// ... implement Warn, Error, Debug methods
+
+// Usage
+logrusLogger := logrus.New()
+err := openapi.EnableDocs(framework, httpServer,
+    openapi.WithLogger(&LogrusAdapter{logger: logrusLogger}),
+)
+```
+
+The Logger interface is simple and easy to implement:
+
+```go
+type Logger interface {
+    Info(msg string, args ...any)
+    Warn(msg string, args ...any)
+    Error(msg string, args ...any)
+    Debug(msg string, args ...any)
+}
+```
 
 ## Framework Support
 
@@ -132,8 +241,13 @@ Currently supported:
 
 Framework detection is automatic - just pass your framework instance:
 ```go
-// Works with any framework implementing the discoverer interface
-err := openapi.EnableDocs(hertzFramework, httpServer, cfg, logger)
+// Works with CloudWeGo Hertz out of the box
+err := openapi.EnableDocs(hertzFramework, httpServer)
+
+// For custom frameworks, provide your own discoverer
+err := openapi.EnableDocs(customFramework, httpServer,
+    openapi.WithRouteDiscoverer(myCustomDiscoverer),
+)
 ```
 
 ## Troubleshooting
@@ -159,4 +273,9 @@ go test ./...
 
 # Check generated spec
 curl http://localhost:8080/openapi.json | jq .
+
+# Test with different configurations
+go run main.go  # with defaults
+go run examples/custom-config/main.go  # with custom config
+go run examples/custom-framework/main.go  # with custom discoverer
 ```
