@@ -312,6 +312,15 @@ func (sr *SchemaRegistry) HasHandlerSchema(handlerName string) bool {
 	return exists
 }
 
+// GetAllHandlerNames returns all registered handler names
+func (sr *SchemaRegistry) GetAllHandlerNames() []string {
+	names := make([]string, 0, len(sr.handlerSchemas))
+	for handlerName := range sr.handlerSchemas {
+		names = append(names, handlerName)
+	}
+	return names
+}
+
 // LoadStaticSchemas loads schema files from a directory
 func (sr *SchemaRegistry) LoadStaticSchemas(schemaDir string) error {
 	if _, err := os.Stat(schemaDir); os.IsNotExist(err) {

@@ -176,6 +176,9 @@ func (g *Generator) processRoute(route spec.RouteInfo, tags map[string]bool) err
 		if preRegisteredSchema, exists := g.schemaRegistry.GetHandlerSchema(route.HandlerName); exists {
 			handlerSchema = preRegisteredSchema
 			g.logger.Info("Using pre-registered schema", "handler", route.HandlerName)
+		} else {
+			// Try fallback matching strategies
+			handlerSchema = g.tryFallbackSchemaMatching(route)
 		}
 	}
 
@@ -208,6 +211,59 @@ func (g *Generator) processRoute(route spec.RouteInfo, tags map[string]bool) err
 	g.addOperationToSpec(route.Method, route.Path, operation)
 
 	return nil
+}
+
+// tryFallbackSchemaMatching attempts to match schemas using fallback strategies
+func (g *Generator) tryFallbackSchemaMatching(route spec.RouteInfo) analyzer.HandlerSchema {
+	var handlerSchema analyzer.HandlerSchema
+
+	// Strategy 1: Try with generated path-based handler name
+	pathBasedName := g.pathParser.GenerateHandlerName(route.Method, route.Path)
+	if preRegisteredSchema, exists := g.schemaRegistry.GetHandlerSchema(pathBasedName); exists {
+		g.logger.Info("Using pre-registered schema with path-based matching", 
+			"original_handler", route.HandlerName, 
+			"path_based_handler", pathBasedName)
+		return preRegisteredSchema
+	}
+
+	// Strategy 2: Try case-insensitive matching for all registered handlers
+	allHandlers := g.schemaRegistry.GetAllHandlerNames()
+	lowerHandlerName := strings.ToLower(route.HandlerName)
+	for _, registeredHandler := range allHandlers {
+		if strings.ToLower(registeredHandler) == lowerHandlerName {
+			if preRegisteredSchema, exists := g.schemaRegistry.GetHandlerSchema(registeredHandler); exists {
+				g.logger.Info("Using pre-registered schema with case-insensitive matching", 
+					"original_handler", route.HandlerName, 
+					"matched_handler", registeredHandler)
+				return preRegisteredSchema
+			}
+		}
+	}
+
+	// Strategy 3: Try partial matching (contains)
+	for _, registeredHandler := range allHandlers {
+		// Check if the route handler name contains the registered handler name
+		if strings.Contains(strings.ToLower(route.HandlerName), strings.ToLower(registeredHandler)) {
+			if preRegisteredSchema, exists := g.schemaRegistry.GetHandlerSchema(registeredHandler); exists {
+				g.logger.Info("Using pre-registered schema with partial matching", 
+					"original_handler", route.HandlerName, 
+					"matched_handler", registeredHandler)
+				return preRegisteredSchema
+			}
+		}
+		// Check if the registered handler name contains the route handler name
+		if strings.Contains(strings.ToLower(registeredHandler), strings.ToLower(route.HandlerName)) {
+			if preRegisteredSchema, exists := g.schemaRegistry.GetHandlerSchema(registeredHandler); exists {
+				g.logger.Info("Using pre-registered schema with reverse partial matching", 
+					"original_handler", route.HandlerName, 
+					"matched_handler", registeredHandler)
+				return preRegisteredSchema
+			}
+		}
+	}
+
+	g.logger.Debug("No fallback schema match found", "handler", route.HandlerName)
+	return handlerSchema
 }
 
 // createOperation creates an OpenAPI operation from route information
