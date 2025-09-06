@@ -66,6 +66,21 @@ func (h *HertzRouteDiscoverer) extractHandlerName(route route.RouteInfo) string 
 			if handlerType.Kind() == reflect.Func {
 				// Try to get the function name from runtime
 				funcName := handlerType.String()
+				
+				// Try to get function name using runtime.FuncForPC
+				if pc := handlerValue.Pointer(); pc != 0 {
+					if fn := runtime.FuncForPC(pc); fn != nil {
+						runtimeFuncName := fn.Name()
+						if runtimeFuncName != "" && !isGenericFuncSignature(runtimeFuncName) {
+							cleanName := h.parseHandlerNameFromFunction(runtimeFuncName)
+							if cleanName != "" {
+								return cleanName
+							}
+						}
+					}
+				}
+				
+				// Fallback to type string method
 				if !isGenericFuncSignature(funcName) {
 					// Parse the function name to extract just the method name
 					cleanName := h.parseHandlerNameFromFunction(funcName)
