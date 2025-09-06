@@ -1,7 +1,5 @@
 package spec
 
-import "time"
-
 // OpenAPISpec represents the OpenAPI 3.0 specification
 type OpenAPISpec struct {
 	OpenAPI    string                `json:"openapi"`
@@ -248,21 +246,4 @@ type RouteInfo struct {
 	Summary      string
 	Description  string
 	Deprecated   bool
-}
-
-// HandlerInfo holds information about handler methods and their DTOs
-type HandlerInfo struct {
-	Name         string
-	RequestType  interface{}
-	ResponseType interface{}
-	Method       string
-	Path         string
-	Description  string
-	Tags         []string
-	Deprecated   bool
-}
-
-// GeneratedTime holds the generation timestamp
-type GeneratedTime struct {
-	Time time.Time `json:"time"`
 }

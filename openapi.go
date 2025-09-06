@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/zainokta/openapi-gen/integration"
+	"github.com/zainokta/openapi-gen/logger"
 )
 
 // Option is a functional option for configuring OpenAPI generation
@@ -13,7 +14,7 @@ type Option func(*Options)
 // Options holds configuration for OpenAPI generation
 type Options struct {
 	config           *Config
-	logger           Logger
+	logger           logger.Logger
 	customDiscoverer integration.RouteDiscoverer
 	customizers      []func(*Generator) error
 }
@@ -59,9 +60,9 @@ func WithConfig(cfg *Config) Option {
 //	err := openapi.EnableDocs(framework, httpServer,
 //		openapi.WithLogger(adapter),
 //	)
-func WithLogger(logger Logger) Option {
+func WithLogger(l logger.Logger) Option {
 	return func(opts *Options) {
-		opts.logger = logger
+		opts.logger = l
 	}
 }
 
@@ -77,9 +78,9 @@ func WithLogger(logger Logger) Option {
 //	err := openapi.EnableDocs(framework, httpServer,
 //		openapi.WithSlogLogger(logger),
 //	)
-func WithSlogLogger(logger *slog.Logger) Option {
+func WithSlogLogger(l *slog.Logger) Option {
 	return func(opts *Options) {
-		opts.logger = NewSlogAdapter(logger)
+		opts.logger = logger.NewSlogAdapter(l)
 	}
 }
 
@@ -154,7 +155,7 @@ func processOptions(opts ...Option) *Options {
 		options.config = NewConfig()
 	}
 	if options.logger == nil {
-		options.logger = NewSlogAdapter(slog.Default())
+		options.logger = logger.NewSlogAdapter(slog.Default())
 	}
 
 	return options

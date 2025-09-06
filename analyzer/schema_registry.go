@@ -12,6 +12,7 @@ type SchemaRegistry struct {
 	requestSchemas  map[string]spec.Schema // key: "METHOD /path"
 	responseSchemas map[string]spec.Schema
 	typeSchemas     map[reflect.Type]spec.Schema // Direct type mapping
+	routeMetadata   map[string]spec.RouteInfo    // key: "METHOD /path"
 	schemaGen       *SchemaGenerator
 }
 
@@ -27,6 +28,7 @@ func NewSchemaRegistry() *SchemaRegistry {
 		requestSchemas:  make(map[string]spec.Schema),
 		responseSchemas: make(map[string]spec.Schema),
 		typeSchemas:     make(map[reflect.Type]spec.Schema),
+		routeMetadata:   make(map[string]spec.RouteInfo),
 		schemaGen:       NewSchemaGenerator(),
 	}
 }
@@ -60,6 +62,47 @@ func (sr *SchemaRegistry) RegisterHandlerTypes(method, path string, reqType, res
 		respSchema := sr.schemaGen.GenerateSchemaFromType(respType)
 		sr.RegisterResponseSchema(method, path, respSchema)
 	}
+}
+
+// RegisterHandlerTypesWithMetadata registers schemas from Go types with additional metadata
+func (sr *SchemaRegistry) RegisterHandlerTypesWithMetadata(method, path string, reqType, respType reflect.Type, metadata spec.RouteInfo) {
+	// Register the types as schemas
+	sr.RegisterHandlerTypes(method, path, reqType, respType)
+
+	// Store metadata for later use by the generator
+	key := sr.createRouteKey(method, path)
+	sr.routeMetadata[key] = metadata
+}
+
+// RegisterHandlerTypesFromValues registers schemas from actual Go values (used by generated code)
+func (sr *SchemaRegistry) RegisterHandlerTypesFromValues(method, path string, reqValue, respValue interface{}) {
+	var reqType, respType reflect.Type
+
+	if reqValue != nil {
+		reqType = reflect.TypeOf(reqValue)
+		// Handle pointer types
+		if reqType.Kind() == reflect.Pointer {
+			reqType = reqType.Elem()
+		}
+	}
+
+	if respValue != nil {
+		respType = reflect.TypeOf(respValue)
+		// Handle pointer types
+		if respType.Kind() == reflect.Pointer {
+			respType = respType.Elem()
+		}
+	}
+
+	sr.RegisterHandlerTypes(method, path, reqType, respType)
+}
+
+// RegisterHandlerTypesFromValuesWithMetadata registers schemas from values with metadata
+func (sr *SchemaRegistry) RegisterHandlerTypesFromValuesWithMetadata(method, path string, reqValue, respValue interface{}, metadata spec.RouteInfo) {
+	sr.RegisterHandlerTypesFromValues(method, path, reqValue, respValue)
+
+	key := sr.createRouteKey(method, path)
+	sr.routeMetadata[key] = metadata
 }
 
 // RegisterTypeSchema registers a schema for a specific Go type
@@ -126,10 +169,54 @@ func (sr *SchemaRegistry) GenerateSchemaFromType(t reflect.Type) spec.Schema {
 // ListRegisteredSchemas returns all registered schemas for debugging
 func (sr *SchemaRegistry) ListRegisteredSchemas() map[string]interface{} {
 	return map[string]interface{}{
-		"request_schemas":    sr.requestSchemas,
-		"response_schemas":   sr.responseSchemas,
-		"type_schemas_count": len(sr.typeSchemas),
+		"request_schemas":  sr.requestSchemas,
+		"response_schemas": sr.responseSchemas,
+		"type_schemas":     sr.typeSchemas,
 	}
+}
+
+// GetAllSchemas returns all registered schemas as a single map
+func (sr *SchemaRegistry) GetAllSchemas() map[string]spec.Schema {
+	allSchemas := make(map[string]spec.Schema)
+
+	// Add request schemas
+	for key, schema := range sr.requestSchemas {
+		// Create a unique name for the schema
+		name := sr.generateSchemaName(key, "request")
+		allSchemas[name] = schema
+	}
+
+	// Add response schemas
+	for key, schema := range sr.responseSchemas {
+		// Create a unique name for the schema
+		name := sr.generateSchemaName(key, "response")
+		allSchemas[name] = schema
+	}
+
+	// Add type schemas
+	for t, schema := range sr.typeSchemas {
+		name := t.Name()
+		if name != "" {
+			allSchemas[name] = schema
+		}
+	}
+
+	return allSchemas
+}
+
+// generateSchemaName generates a unique schema name from route key
+func (sr *SchemaRegistry) generateSchemaName(routeKey, schemaType string) string {
+	// Convert "POST /auth/login" to "PostAuthLoginRequest"
+	cleanKey := strings.ReplaceAll(routeKey, " ", "")
+	cleanKey = strings.ReplaceAll(cleanKey, "/", "_")
+	cleanKey = strings.ReplaceAll(cleanKey, ":", "")
+
+	// Capitalize first letter
+	if len(cleanKey) > 0 {
+		cleanKey = strings.ToUpper(cleanKey[:1]) + cleanKey[1:]
+	}
+
+	return cleanKey + schemaType
 }
 
 // ClearAll clears all registered schemas
@@ -137,6 +224,7 @@ func (sr *SchemaRegistry) ClearAll() {
 	sr.requestSchemas = make(map[string]spec.Schema)
 	sr.responseSchemas = make(map[string]spec.Schema)
 	sr.typeSchemas = make(map[reflect.Type]spec.Schema)
+	sr.routeMetadata = make(map[string]spec.RouteInfo)
 	sr.schemaGen.ClearCache()
 }
 
@@ -195,6 +283,13 @@ func (sr *SchemaRegistry) registerCommonErrorSchemas() {
 		Code    int         `json:"code"`
 		Details interface{} `json:"details,omitempty"`
 	}{})] = errorSchema
+}
+
+// GetRouteMetadata retrieves metadata for a specific endpoint
+func (sr *SchemaRegistry) GetRouteMetadata(method, path string) (spec.RouteInfo, bool) {
+	key := sr.createRouteKey(method, path)
+	metadata, exists := sr.routeMetadata[key]
+	return metadata, exists
 }
 
 // GetSchemaGenerator returns the internal schema generator for advanced usage

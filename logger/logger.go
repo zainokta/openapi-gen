@@ -1,4 +1,4 @@
-package openapi
+package logger
 
 import "log/slog"
 
@@ -21,7 +21,7 @@ type Logger interface {
 // Example usage:
 //
 //	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-//	adapter := openapi.NewSlogAdapter(logger)
+//	adapter := logger.NewSlogAdapter(logger)
 //	
 //	err := openapi.EnableDocs(framework, httpServer,
 //		openapi.WithLogger(adapter),
@@ -62,7 +62,7 @@ func (s *SlogAdapter) Debug(msg string, args ...any) {
 // Example usage:
 //
 //	err := openapi.EnableDocs(framework, httpServer,
-//		openapi.WithLogger(&openapi.NoOpLogger{}),
+//		openapi.WithLogger(&logger.NoOpLogger{}),
 //	)
 type NoOpLogger struct{}
 
@@ -77,3 +77,46 @@ func (n *NoOpLogger) Error(msg string, args ...any) {}
 
 // Debug discards the log message
 func (n *NoOpLogger) Debug(msg string, args ...any) {}
+
+// TestLogger is a simple test logger that captures log messages for testing
+// This is useful for verifying logging behavior in tests
+type TestLogger struct {
+	InfoCalls  []LogCall
+	WarnCalls  []LogCall
+	ErrorCalls []LogCall
+	DebugCalls []LogCall
+}
+
+// LogCall represents a captured log call with message and arguments
+type LogCall struct {
+	Message string
+	Args    []any
+}
+
+// Info captures an info log call
+func (t *TestLogger) Info(msg string, args ...any) {
+	t.InfoCalls = append(t.InfoCalls, LogCall{Message: msg, Args: args})
+}
+
+// Warn captures a warn log call
+func (t *TestLogger) Warn(msg string, args ...any) {
+	t.WarnCalls = append(t.WarnCalls, LogCall{Message: msg, Args: args})
+}
+
+// Error captures an error log call
+func (t *TestLogger) Error(msg string, args ...any) {
+	t.ErrorCalls = append(t.ErrorCalls, LogCall{Message: msg, Args: args})
+}
+
+// Debug captures a debug log call
+func (t *TestLogger) Debug(msg string, args ...any) {
+	t.DebugCalls = append(t.DebugCalls, LogCall{Message: msg, Args: args})
+}
+
+// Clear clears all captured log calls
+func (t *TestLogger) Clear() {
+	t.InfoCalls = nil
+	t.WarnCalls = nil
+	t.ErrorCalls = nil
+	t.DebugCalls = nil
+}

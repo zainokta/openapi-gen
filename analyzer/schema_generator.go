@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"go/ast"
 	"reflect"
 	"strings"
 	"time"
@@ -299,6 +300,209 @@ func parseFloat(s string) *float64 {
 		return &result
 	}
 	return nil
+}
+
+// GenerateSchemaFromStructAST generates OpenAPI schema directly from AST struct type
+func (sg *SchemaGenerator) GenerateSchemaFromStructAST(structType *ast.StructType, packageImports map[string]string) spec.Schema {
+	schema := spec.Schema{
+		Type:       "object",
+		Properties: make(map[string]spec.Schema),
+		Required:   []string{},
+	}
+
+	if structType.Fields == nil {
+		return schema
+	}
+
+	for _, field := range structType.Fields.List {
+		// Skip unexported fields (those starting with lowercase)
+		for _, name := range field.Names {
+			if !name.IsExported() {
+				continue
+			}
+
+			// Get field name from json tag or field name
+			fieldName := sg.getFieldNameFromAST(field)
+			if fieldName == "-" {
+				continue // Skip fields marked as ignored
+			}
+
+			// Generate schema for field type using AST
+			fieldSchema := sg.generateSchemaFromASTType(field.Type, packageImports)
+
+			// Extract field metadata from tags
+			sg.applyFieldTagsFromAST(field, &fieldSchema)
+
+			// Add to properties
+			schema.Properties[fieldName] = fieldSchema
+
+			// Check if field is required
+			if sg.isFieldRequiredFromAST(field) {
+				schema.Required = append(schema.Required, fieldName)
+			}
+		}
+	}
+
+	return schema
+}
+
+// generateSchemaFromASTType generates schema from AST type expressions
+func (sg *SchemaGenerator) generateSchemaFromASTType(typeExpr ast.Expr, packageImports map[string]string) spec.Schema {
+	switch t := typeExpr.(type) {
+	case *ast.Ident:
+		// Handle built-in types: string, int, bool, etc.
+		return sg.handleBasicASTType(t.Name)
+	case *ast.SelectorExpr:
+		// Handle package.Type expressions like time.Time
+		if ident, ok := t.X.(*ast.Ident); ok {
+			packageName := ident.Name
+			typeName := t.Sel.Name
+			return sg.handlePackageTypeFromAST(packageName, typeName, packageImports)
+		}
+	case *ast.ArrayType:
+		// Handle []Type
+		itemSchema := sg.generateSchemaFromASTType(t.Elt, packageImports)
+		return spec.Schema{
+			Type:  "array",
+			Items: &itemSchema,
+		}
+	case *ast.StarExpr:
+		// Handle *Type (pointer types)
+		return sg.generateSchemaFromASTType(t.X, packageImports)
+	case *ast.MapType:
+		// Handle map[string]Type
+		valueSchema := sg.generateSchemaFromASTType(t.Value, packageImports)
+		return spec.Schema{
+			Type:                 "object",
+			AdditionalProperties: &valueSchema,
+		}
+	}
+
+	// Fallback for unknown types
+	return spec.Schema{
+		Type:        "object",
+		Description: "Unknown type",
+	}
+}
+
+// handleBasicASTType handles built-in Go types from AST
+func (sg *SchemaGenerator) handleBasicASTType(typeName string) spec.Schema {
+	switch typeName {
+	case "string":
+		return spec.Schema{Type: "string"}
+	case "int", "int8", "int16", "int32", "int64":
+		return spec.Schema{Type: "integer"}
+	case "uint", "uint8", "uint16", "uint32", "uint64":
+		return spec.Schema{Type: "integer", Minimum: float64Ptr(0)}
+	case "float32", "float64":
+		return spec.Schema{Type: "number"}
+	case "bool":
+		return spec.Schema{Type: "boolean"}
+	default:
+		return spec.Schema{Type: "object", Description: "Unknown basic type: " + typeName}
+	}
+}
+
+// handlePackageTypeFromAST handles package.Type expressions from AST
+func (sg *SchemaGenerator) handlePackageTypeFromAST(packageName, typeName string, packageImports map[string]string) spec.Schema {
+	// Handle known special types
+	if packageName == "time" && typeName == "Time" {
+		return spec.Schema{
+			Type:   "string",
+			Format: "date-time",
+		}
+	}
+
+	// For other package types, we would need to recursively parse them
+	// For now, return a basic object schema
+	return spec.Schema{
+		Type:        "object",
+		Description: "External type: " + packageName + "." + typeName,
+	}
+}
+
+// getFieldNameFromAST extracts field name from json tag or uses struct field name
+func (sg *SchemaGenerator) getFieldNameFromAST(field *ast.Field) string {
+	if field.Tag != nil {
+		tagValue := strings.Trim(field.Tag.Value, "`")
+
+		// Parse struct tags to find json tag
+		tags := parseStructTag(tagValue)
+		if jsonTag, exists := tags["json"]; exists {
+			parts := strings.Split(jsonTag, ",")
+			if len(parts) > 0 && parts[0] != "" {
+				return parts[0]
+			}
+		}
+	}
+
+	// Use the field name if no json tag
+	if len(field.Names) > 0 {
+		return sg.toSnakeCase(field.Names[0].Name)
+	}
+
+	return ""
+}
+
+// applyFieldTagsFromAST applies struct tag information to schema from AST
+func (sg *SchemaGenerator) applyFieldTagsFromAST(field *ast.Field, schema *spec.Schema) {
+	if field.Tag == nil {
+		return
+	}
+
+	tagValue := strings.Trim(field.Tag.Value, "`")
+	tags := parseStructTag(tagValue)
+
+	// Apply validation tags
+	if validateTag, exists := tags["validate"]; exists {
+		sg.applyValidationTags(validateTag, schema)
+	}
+
+	// Apply example from tag
+	if example, exists := tags["example"]; exists {
+		schema.Example = example
+	}
+
+	// Apply description from tag
+	if desc, exists := tags["description"]; exists {
+		schema.Description = desc
+	}
+}
+
+// isFieldRequiredFromAST checks if field is required based on validate tag from AST
+func (sg *SchemaGenerator) isFieldRequiredFromAST(field *ast.Field) bool {
+	if field.Tag == nil {
+		return false
+	}
+
+	tagValue := strings.Trim(field.Tag.Value, "`")
+	tags := parseStructTag(tagValue)
+
+	if validateTag, exists := tags["validate"]; exists {
+		return strings.Contains(validateTag, "required")
+	}
+
+	return false
+}
+
+// parseStructTag parses struct tag string into a map
+func parseStructTag(tag string) map[string]string {
+	result := make(map[string]string)
+
+	// Simple tag parser - splits on spaces and key:value pairs
+	parts := strings.Fields(tag)
+	for _, part := range parts {
+		if strings.Contains(part, ":") {
+			keyValue := strings.SplitN(part, ":", 2)
+			if len(keyValue) == 2 {
+				key := keyValue[0]
+				value := strings.Trim(keyValue[1], "\"")
+				result[key] = value
+			}
+		}
+	}
+
+	return result
 }
 
 // ClearCache clears the type cache (useful for testing)

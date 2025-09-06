@@ -12,6 +12,7 @@ import (
 
 	"github.com/zainokta/openapi-gen/analyzer"
 	"github.com/zainokta/openapi-gen/integration"
+	"github.com/zainokta/openapi-gen/logger"
 	"github.com/zainokta/openapi-gen/parser"
 	"github.com/zainokta/openapi-gen/spec"
 )
@@ -19,7 +20,7 @@ import (
 // Generator is the main OpenAPI specification generator
 type Generator struct {
 	config          *Config
-	logger          Logger
+	logger          logger.Logger
 	discoverer      integration.RouteDiscoverer
 	pathParser      *parser.PathParser
 	overrideManager *OverrideManager
@@ -81,7 +82,7 @@ func (g *Generator) GetSchemaRegistry() *analyzer.SchemaRegistry {
 }
 
 // GetLogger returns the configured logger instance
-func (g *Generator) GetLogger() Logger {
+func (g *Generator) GetLogger() logger.Logger {
 	return g.logger
 }
 
@@ -139,8 +140,20 @@ func (g *Generator) GenerateSpec() (*spec.OpenAPISpec, error) {
 	// Generate tags from collected unique tags
 	g.spec.Tags = g.generateTagsFromSet(tags)
 
-	// Add schemas from struct parser (placeholder for now)
-	g.spec.Components.Schemas = g.structParser.GetSchemas()
+	// Add schemas from both struct parser and schema registry
+	allSchemas := make(map[string]spec.Schema)
+
+	// Add schemas from struct parser (basic types)
+	for name, schema := range g.structParser.GetSchemas() {
+		allSchemas[name] = schema
+	}
+
+	// Add schemas from schema registry (handler DTOs)
+	for name, schema := range g.schemaRegistry.GetAllSchemas() {
+		allSchemas[name] = schema
+	}
+
+	g.spec.Components.Schemas = allSchemas
 
 	g.logger.Info("Generated OpenAPI spec",
 		"paths", len(g.spec.Paths),
@@ -152,6 +165,19 @@ func (g *Generator) GenerateSpec() (*spec.OpenAPISpec, error) {
 
 // processRoute processes a single route and adds it to the OpenAPI spec
 func (g *Generator) processRoute(route spec.RouteInfo, tags map[string]bool) error {
+	// Analyze handler to extract request/response types
+	if route.Handler != nil {
+		handlerSchema := g.handlerAnalyzer.AnalyzeHandler(route.Handler)
+
+		// Register the discovered schemas with the schema registry
+		if handlerSchema.RequestSchema.Type != "" {
+			g.schemaRegistry.RegisterRequestSchema(route.Method, route.Path, handlerSchema.RequestSchema)
+		}
+		if handlerSchema.ResponseSchema.Type != "" {
+			g.schemaRegistry.RegisterResponseSchema(route.Method, route.Path, handlerSchema.ResponseSchema)
+		}
+	}
+
 	// Parse route using algorithm
 	parsed := g.pathParser.ParseRoute(route.Method, route.Path)
 
