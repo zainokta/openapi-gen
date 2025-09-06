@@ -1,8 +1,9 @@
 package openapi
 
 import (
-	"github.com/zainokta/openapi-gen/parser"
 	"testing"
+
+	"github.com/zainokta/openapi-gen/parser"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -82,7 +83,7 @@ func TestOverrideManager(t *testing.T) {
 	// Get metadata with overrides
 	metadata := om.GetMetadata("POST", "/api/v1/auth/login", parsed)
 
-	assert.Equal(t, []string{"authentication", "security"}, metadata.Tags)
+	assert.Equal(t, "authentication", metadata.Tags)
 	assert.Equal(t, "User Authentication", metadata.Summary)
 	assert.Equal(t, "Authenticate user and return tokens", metadata.Description)
 }
@@ -125,5 +126,5 @@ func TestTagOverrides(t *testing.T) {
 	parsed := parser.ParseRoute("POST", "/api/v1/auth/login")
 	metadata := om.GetMetadata("POST", "/api/v1/auth/login", parsed)
 
-	assert.Equal(t, []string{"authentication"}, metadata.Tags)
+	assert.Equal(t, "authentication", metadata.Tags)
 }

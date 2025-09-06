@@ -3,7 +3,6 @@ package openapi
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -20,7 +19,7 @@ import (
 // Generator is the main OpenAPI specification generator
 type Generator struct {
 	config          *Config
-	logger          *slog.Logger
+	logger          Logger
 	discoverer      integration.RouteDiscoverer
 	pathParser      *parser.PathParser
 	overrideManager *OverrideManager
@@ -30,12 +29,20 @@ type Generator struct {
 	spec            *spec.OpenAPISpec
 }
 
-// NewGenerator creates a new OpenAPI generator
-func NewGenerator(cfg *Config, logger *slog.Logger, framework interface{}, httpServer integration.HTTPServer) (*Generator, error) {
-	// Create framework-agnostic discoverer
-	discoverer, err := integration.NewAutoDiscoverer(framework)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create route discoverer: %w", err)
+// NewGenerator creates a new OpenAPI generator with options
+func NewGenerator(framework any, httpServer integration.HTTPServer, options *Options) (*Generator, error) {
+	var discoverer integration.RouteDiscoverer
+	var err error
+
+	// Use custom discoverer if provided, otherwise auto-discover
+	if options.customDiscoverer != nil {
+		discoverer = options.customDiscoverer
+	} else {
+		// Create framework-agnostic discoverer
+		discoverer, err = integration.NewAutoDiscoverer(framework)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create route discoverer: %w", err)
+		}
 	}
 
 	// Create components
@@ -46,8 +53,8 @@ func NewGenerator(cfg *Config, logger *slog.Logger, framework interface{}, httpS
 	handlerAnalyzer := integration.NewHertzHandlerAnalyzer()
 
 	generator := &Generator{
-		config:          cfg,
-		logger:          logger,
+		config:          options.config,
+		logger:          options.logger,
 		discoverer:      discoverer,
 		pathParser:      pathParser,
 		overrideManager: overrideManager,
@@ -71,6 +78,11 @@ func (g *Generator) GetOverrideManager() *OverrideManager {
 // GetSchemaRegistry returns the schema registry for manual schema registration
 func (g *Generator) GetSchemaRegistry() *analyzer.SchemaRegistry {
 	return g.schemaRegistry
+}
+
+// GetLogger returns the configured logger instance
+func (g *Generator) GetLogger() Logger {
+	return g.logger
 }
 
 // GenerateSpec generates the complete OpenAPI specification
