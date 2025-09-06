@@ -1,10 +1,11 @@
 package integration
 
 import (
-	"github.com/zainokta/openapi-gen/spec"
 	"fmt"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/gin-gonic/gin"
+	"github.com/zainokta/openapi-gen/spec"
 )
 
 // RouteDiscoverer interface for framework-agnostic route discovery
@@ -25,6 +26,8 @@ func NewAutoDiscoverer(framework interface{}) (*AutoDiscoverer, error) {
 	switch f := framework.(type) {
 	case *server.Hertz:
 		discoverer = NewHertzRouteDiscoverer(f)
+	case *gin.Engine:
+		discoverer = NewGinRouteDiscoverer(f)
 	default:
 		return nil, fmt.Errorf("unsupported framework type: %T", framework)
 	}
