@@ -37,6 +37,25 @@ func WithConfig(cfg *Config) Option {
 	}
 }
 
+// WithSchemaDir sets the directory path for generated schema files
+//
+// This option specifies where the CLI tool generates schema files
+// and where the runtime should load them from. Defaults to "./schemas".
+//
+// Example:
+//
+//	err := openapi.EnableDocs(framework, httpServer,
+//		openapi.WithSchemaDir("./generated/schemas"),
+//	)
+func WithSchemaDir(path string) Option {
+	return func(opts *Options) {
+		if opts.config == nil {
+			opts.config = NewConfig()
+		}
+		opts.config.SetSchemaDir(path)
+	}
+}
+
 // WithLogger sets a custom logger for OpenAPI generation
 //
 // Accepts any logger that implements the Logger interface, providing
@@ -210,7 +229,7 @@ func EnableDocs(framework any, h integration.HTTPServer, opts ...Option) error {
 	}
 
 	// Use logger from generator (already processed in NewGenerator)
-	generator.GetLogger().Info("OpenAPI documentation enabled with customization",
+	generator.logger.Info("OpenAPI documentation enabled with customization",
 		"swagger_ui", "/docs",
 		"openapi_spec", "/openapi.json")
 

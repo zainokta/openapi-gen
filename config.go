@@ -1,6 +1,8 @@
 package openapi
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // Config represents the configuration for the OpenAPI generator
 type Config struct {
@@ -11,7 +13,11 @@ type Config struct {
 	Description string  `json:"description,omitempty"`
 	Version     string  `json:"version,omitempty"`
 	Contact     Contact `json:"contact,omitempty"`
+
+	// Schema directory configuration
+	SchemaDir   string  `json:"schema_dir,omitempty"`         // Path to generated schema files
 }
+
 
 // Contact represents contact information for the API
 type Contact struct {
@@ -31,7 +37,23 @@ func NewConfig() *Config {
 		Contact: Contact{
 			Name: "API Team",
 		},
+		// Default schema directory
+		SchemaDir: "./schemas",
 	}
+}
+
+// NewProductionConfig creates a configuration suitable for Docker/production environments
+func NewProductionConfig() *Config {
+	config := NewConfig()
+	config.Environment = "production"
+	return config
+}
+
+// NewDevelopmentConfig creates a configuration suitable for development
+func NewDevelopmentConfig() *Config {
+	config := NewConfig()
+	config.Environment = "development"
+	return config
 }
 
 // GetServerURL returns the server URL for the OpenAPI spec
@@ -59,4 +81,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("version cannot be empty")
 	}
 	return nil
+}
+
+// SetSchemaDir sets the schema directory path
+func (c *Config) SetSchemaDir(path string) *Config {
+	c.SchemaDir = path
+	return c
 }

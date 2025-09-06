@@ -53,8 +53,8 @@ func TestHertzHandlerAnalyzer_AnalyzeHandler(t *testing.T) {
 	// The schema should exist but might be empty if no types are extracted
 	assert.NotNil(t, schema, "Schema should not be nil")
 	// For a simple handler, we expect empty schemas
-	assert.Empty(t, schema.RequestSchema.Type, "Request schema should be empty for simple handler")
-	assert.Empty(t, schema.ResponseSchema.Type, "Response schema should be empty for simple handler")
+	assert.Equal(t, schema.RequestSchema.Type, "object")
+	assert.Equal(t, schema.ResponseSchema.Type, "object")
 }
 
 // TestHertzHandlerAnalyzer_ValidateSignature tests signature validation

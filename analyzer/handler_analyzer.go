@@ -18,6 +18,7 @@ type HandlerAnalyzer interface {
 	ExtractTypes(handler interface{}) (requestType, responseType reflect.Type, err error)
 	AnalyzeHandler(handler interface{}) HandlerSchema
 	GetFrameworkName() string
+	SetConfig(config interface{})
 }
 
 // DynamicTypeRegistry manages automatic type discovery from any imported package

@@ -159,6 +159,7 @@ type HertzHandlerAnalyzer struct {
 	schemaGen      *analyzer.SchemaGenerator
 	typeRegistry   *analyzer.DynamicTypeRegistry
 	sourceFilePath string // Path to the source file being analyzed
+	config         interface{} // Configuration passed from library consumer
 }
 
 // NewHertzHandlerAnalyzer creates a new Hertz handler analyzer
@@ -177,6 +178,33 @@ func (h *HertzHandlerAnalyzer) GetFrameworkName() string {
 // GetSchemaGenerator returns the internal schema generator for testing
 func (h *HertzHandlerAnalyzer) GetSchemaGenerator() *analyzer.SchemaGenerator {
 	return h.schemaGen
+}
+
+// SetConfig sets the configuration for the analyzer (implements HandlerAnalyzer interface)
+func (h *HertzHandlerAnalyzer) SetConfig(config interface{}) {
+	h.config = config
+}
+
+// isProductionMode checks if running in production mode based on config
+func (h *HertzHandlerAnalyzer) isProductionMode() bool {
+	if h.config != nil {
+		// Try to assert as our Config type
+		if cfg, ok := h.config.(interface{ IsProductionMode() bool }); ok {
+			return cfg.IsProductionMode()
+		}
+	}
+	return false
+}
+
+// isASTAnalysisEnabled checks if AST analysis should be performed
+func (h *HertzHandlerAnalyzer) isASTAnalysisEnabled() bool {
+	if h.config != nil {
+		// Try to assert as our Config type
+		if cfg, ok := h.config.(interface{ IsASTAnalysisEnabled() bool }); ok {
+			return cfg.IsASTAnalysisEnabled()
+		}
+	}
+	return true // Default to enabled if no config
 }
 
 // ExtractTypes extracts request and response types from Hertz handler function
@@ -203,15 +231,15 @@ func (h *HertzHandlerAnalyzer) ExtractTypes(handler interface{}) (requestType, r
 	return reqType, respType, nil
 }
 
-// AnalyzeHandler analyzes handler and returns schemas
+// AnalyzeHandler analyzes handler and returns schemas with Docker-compatible fallbacks
 func (h *HertzHandlerAnalyzer) AnalyzeHandler(handler interface{}) analyzer.HandlerSchema {
-	// First, try to analyze using the original approach
+	// First, try to analyze using reflection
 	reqType, respType, err := h.ExtractTypes(handler)
 
 	schema := analyzer.HandlerSchema{}
 
 	if err == nil && (reqType != nil || respType != nil) {
-		// Original analysis worked
+		// Reflection analysis worked
 		if reqType != nil {
 			schema.RequestSchema = h.schemaGen.GenerateSchemaFromType(reqType)
 		}
@@ -221,33 +249,122 @@ func (h *HertzHandlerAnalyzer) AnalyzeHandler(handler interface{}) analyzer.Hand
 		return schema
 	}
 
-	// Fallback: Try to determine types from handler name pattern
-	handlerValue := reflect.ValueOf(handler)
-	if handlerValue.IsValid() {
-		handlerType := handlerValue.Type()
-		handlerName := handlerType.String()
+	// Second, try AST analysis (only if enabled and source files are available)
+	if h.isASTAnalysisEnabled() && !h.isProductionMode() && h.areSourceFilesAvailable() {
+		if astSchema := h.tryASTAnalysis(handler); astSchema.RequestSchema.Type != "" || astSchema.ResponseSchema.Type != "" {
+			return astSchema
+		}
+	}
 
-		// Check if this is a wrapped Hertz handler
-		if handlerName == "app.HandlerFunc" {
-			// Try to get the original handler name from runtime info
-			if originalHandlerName := h.getOriginalHandlerName(handlerValue); originalHandlerName != "" {
-				// Get the full name for source file resolution
-				pc := handlerValue.Pointer()
-				var fullName string
-				if pc != 0 {
-					if fn := runtime.FuncForPC(pc); fn != nil {
-						fullName = fn.Name()
-					}
+	// Final fallback: Generate generic schemas for Docker/production environments
+	return h.generateFallbackSchemas()
+}
+
+// areSourceFilesAvailable checks if Go source files are available (not in Docker/production)
+func (h *HertzHandlerAnalyzer) areSourceFilesAvailable() bool {
+	// Quick check: try to find any .go file in common locations
+	wd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+
+	// Check for .go files in current directory and common subdirectories
+	checkDirs := []string{
+		wd,
+		filepath.Join(wd, "internal"),
+		filepath.Join(wd, "pkg"),
+		filepath.Join(wd, "cmd"),
+	}
+
+	for _, dir := range checkDirs {
+		if files, err := os.ReadDir(dir); err == nil {
+			for _, file := range files {
+				if strings.HasSuffix(file.Name(), ".go") {
+					return true
 				}
-				return h.analyzeHandlerByName(originalHandlerName, fullName)
 			}
+		}
+	}
+
+	return false
+}
+
+// tryASTAnalysis attempts AST-based analysis when source files are available
+func (h *HertzHandlerAnalyzer) tryASTAnalysis(handler interface{}) analyzer.HandlerSchema {
+	schema := analyzer.HandlerSchema{}
+
+	handlerValue := reflect.ValueOf(handler)
+	if !handlerValue.IsValid() {
+		return schema
+	}
+
+	handlerType := handlerValue.Type()
+	handlerName := handlerType.String()
+
+	// Check if this is a wrapped Hertz handler
+	if handlerName == "app.HandlerFunc" {
+		// Try to get the original handler name from runtime info
+		if originalHandlerName := h.getOriginalHandlerName(handlerValue); originalHandlerName != "" {
+			// Get the full name for source file resolution
+			pc := handlerValue.Pointer()
+			var fullName string
+			if pc != 0 {
+				if fn := runtime.FuncForPC(pc); fn != nil {
+					fullName = fn.Name()
+				}
+			}
+			return h.analyzeHandlerByName(originalHandlerName, fullName)
 		}
 	}
 
 	return schema
 }
 
-// getOriginalHandlerName attempts to extract the original handler name from runtime info
+// generateFallbackSchemas generates generic schemas for Docker/production environments
+func (h *HertzHandlerAnalyzer) generateFallbackSchemas() analyzer.HandlerSchema {
+	schema := analyzer.HandlerSchema{}
+
+	// Generate generic request schema for POST/PUT/PATCH methods
+	schema.RequestSchema = spec.Schema{
+		Type: "object",
+		Properties: map[string]spec.Schema{
+			"data": {
+				Type:        "object",
+				Description: "Request payload (schema analysis unavailable in production mode)",
+				AdditionalProperties: &spec.Schema{Type: "any"},
+			},
+		},
+		Description: "Generic request schema - AST analysis not available",
+	}
+
+	// Generate generic response schema
+	schema.ResponseSchema = spec.Schema{
+		Type: "object",
+		Properties: map[string]spec.Schema{
+			"data": {
+				Type:        "object",
+				Description: "Response data",
+				AdditionalProperties: &spec.Schema{Type: "any"},
+			},
+			"message": {
+				Type:        "string",
+				Description: "Response message",
+				Example:     "Success",
+			},
+			"status": {
+				Type:        "integer",
+				Description: "HTTP status code",
+				Example:     200,
+			},
+		},
+		Required: []string{"status"},
+		Description: "Generic response schema - AST analysis not available",
+	}
+
+	return schema
+}
+
+// getOriginalHandlerName attempts to extract the original handler name from runtime info for external modules
 func (h *HertzHandlerAnalyzer) getOriginalHandlerName(handlerValue reflect.Value) string {
 	// Get the function pointer
 	pc := handlerValue.Pointer()
@@ -264,21 +381,88 @@ func (h *HertzHandlerAnalyzer) getOriginalHandlerName(handlerValue reflect.Value
 	// Get the full function name
 	fullName := fn.Name()
 
-	// Check if it's a wrapped handler with any receiver pattern (*SomeType).
-	// Example: some-service/internal/interfaces/http/handlers.(*AuthController).Register-fm
-	// Example: some-service/pkg/api.(*UserService).CreateUser-fm
-	// Example: some-service/handlers.(*APIHandler).GetData-fm
+	// Enhanced parsing for external modules
+	return h.parseHandlerNameFromFunction(fullName)
+}
+
+// parseHandlerNameFromFunction parses handler name from various function name patterns
+func (h *HertzHandlerAnalyzer) parseHandlerNameFromFunction(fullName string) string {
+	// Handle different patterns from external modules:
+	// 1. external-app/internal/handlers.(*UserHandler).CreateUser-fm
+	// 2. github.com/user/app/pkg/api.(*Controller).Method-fm
+	// 3. some.domain/path/handlers.(*Handler).Method.func1
+	// 4. app/handlers.Function
+
+	// Pattern 1 & 2: Method receivers (*Type).Method
 	if strings.Contains(fullName, "(*") && strings.Contains(fullName, ").") {
-		// Extract the method name
-		if idx := strings.LastIndex(fullName, "."); idx != -1 {
-			methodName := fullName[idx+1:]
-			// Remove the -fm suffix if present
-			methodName = strings.TrimSuffix(methodName, "-fm")
-			return methodName
+		return h.extractMethodFromReceiver(fullName)
+	}
+
+	// Pattern 3: Function calls (may include .func1, .func2 suffixes)
+	if strings.Contains(fullName, ".") {
+		return h.extractFunctionName(fullName)
+	}
+
+	// Pattern 4: Simple function names
+	return fullName
+}
+
+// extractMethodFromReceiver extracts method name from receiver pattern
+func (h *HertzHandlerAnalyzer) extractMethodFromReceiver(fullName string) string {
+	// Find the last occurrence of ).MethodName
+	parenIdx := strings.LastIndex(fullName, ").")
+	if parenIdx == -1 {
+		return ""
+	}
+
+	// Extract everything after ).
+	methodPart := fullName[parenIdx+2:]
+
+	// Remove common suffixes
+	methodPart = strings.TrimSuffix(methodPart, "-fm")
+	methodPart = strings.TrimSuffix(methodPart, ".func1")
+	methodPart = strings.TrimSuffix(methodPart, ".func2")
+
+	// Extract just the method name (in case there are more dots)
+	if dotIdx := strings.Index(methodPart, "."); dotIdx != -1 {
+		methodPart = methodPart[:dotIdx]
+	}
+
+	return methodPart
+}
+
+// extractFunctionName extracts function name from various dot-separated patterns
+func (h *HertzHandlerAnalyzer) extractFunctionName(fullName string) string {
+	// Split by dots and take the last meaningful part
+	parts := strings.Split(fullName, ".")
+	if len(parts) == 0 {
+		return ""
+	}
+
+	// Work backwards to find the actual function name
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
+		
+		// Skip common suffixes
+		if part == "func1" || part == "func2" || part == "func3" || 
+		   strings.HasSuffix(part, "-fm") {
+			continue
+		}
+		
+		// Skip receiver types (surrounded by parentheses patterns)
+		if strings.HasPrefix(part, "(*") || strings.HasSuffix(part, ")") {
+			continue
+		}
+		
+		// This should be our function name
+		if part != "" && !strings.Contains(part, "/") {
+			return strings.TrimSuffix(part, "-fm")
 		}
 	}
 
-	return fullName
+	// Fallback: return the last part
+	lastPart := parts[len(parts)-1]
+	return strings.TrimSuffix(lastPart, "-fm")
 }
 
 // analyzeHandlerByName analyzes a handler based on its method name using AST
@@ -293,7 +477,7 @@ func (h *HertzHandlerAnalyzer) analyzeHandlerByName(methodName string, handlerFu
 	return schema
 }
 
-// findHandlerSourceFile attempts to find the source file containing the handler
+// findHandlerSourceFile attempts to find the source file containing the handler for library usage
 func (h *HertzHandlerAnalyzer) findHandlerSourceFile(handlerFuncName string) string {
 	// Extract package path from handler function name
 	// Example: some-service/internal/interfaces/http/handlers.(*SomeHandler).Method-fm
@@ -303,63 +487,145 @@ func (h *HertzHandlerAnalyzer) findHandlerSourceFile(handlerFuncName string) str
 		return ""
 	}
 
-	// Extract the package path before the last dot
-	lastDot := strings.LastIndex(handlerFuncName, ".")
-	if lastDot == -1 {
+	// Extract the package path before the receiver or function
+	pkgPath := h.extractPackagePathFromFunction(handlerFuncName)
+	if pkgPath == "" {
 		return ""
 	}
 
-	// Remove the receiver part if present - extract handler name dynamically
-	pkgPath := handlerFuncName[:lastDot]
+	// Try to find the source file using multiple strategies for library usage
+	return h.findSourceFileInConsumerModule(pkgPath)
+}
 
-	// Extract handler type name from the pattern (*HandlerName)
-	if strings.Contains(pkgPath, "(*") && strings.Contains(pkgPath, ")") {
-		start := strings.LastIndex(pkgPath, "(*")
-		end := strings.LastIndex(pkgPath, ")")
-		if start != -1 && end != -1 && end > start+2 {
-			_ = pkgPath[start+2 : end] // handlerType for debugging
-			// Remove the handler receiver part and keep only the package path
-			pkgPath = pkgPath[:start]
+// extractPackagePathFromFunction extracts clean package path from function name
+func (h *HertzHandlerAnalyzer) extractPackagePathFromFunction(handlerFuncName string) string {
+	// Handle different function name patterns:
+	// 1. some-service/pkg/handlers.(*Handler).Method-fm
+	// 2. some-service/pkg/handlers.Function
+	// 3. some-service/pkg/handlers.Function.func1
+
+	// Find the last occurrence of .) or just .
+	var pkgPath string
+
+	// Pattern 1: (*Type).Method-fm
+	if strings.Contains(handlerFuncName, "(*") && strings.Contains(handlerFuncName, ").") {
+		start := strings.LastIndex(handlerFuncName, "(*")
+		if start > 0 {
+			pkgPath = handlerFuncName[:start-1] // -1 to remove the dot before (*
+		}
+	} else {
+		// Pattern 2 & 3: Simple function calls
+		lastDot := strings.LastIndex(handlerFuncName, ".")
+		if lastDot > 0 {
+			pkgPath = handlerFuncName[:lastDot]
 		}
 	}
 
-	pkgPath = strings.TrimSpace(pkgPath)
-	// Remove any trailing dots
-	pkgPath = strings.TrimSuffix(pkgPath, ".")
+	return strings.TrimSpace(pkgPath)
+}
 
-	// Convert to file path
-	if pkgPath != "" {
-		// Try to find the file in the current working directory
-		wd, err := os.Getwd()
-		if err == nil {
-			// Try different possible file locations
-			possiblePaths := []string{
-				filepath.Join(wd, pkgPath+".go"),
-			}
+// findSourceFileInConsumerModule finds source files in the consuming application's module
+func (h *HertzHandlerAnalyzer) findSourceFileInConsumerModule(pkgPath string) string {
+	// Get the consuming application's working directory
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
 
-			// Dynamically extract module name and remove it from package path
-			if moduleName := h.getCurrentModuleName(); moduleName != "" {
-				relativePath := strings.TrimPrefix(pkgPath, moduleName+"/")
-				possiblePaths = append(possiblePaths, filepath.Join(wd, relativePath+".go"))
-			}
+	// Get the consuming application's module name
+	consumerModule := h.getCurrentModuleName()
+	if consumerModule == "" {
+		return ""
+	}
 
-			// Try to find any .go file in the handlers directory
-			for _, basePath := range []string{pkgPath, strings.TrimPrefix(pkgPath, h.getCurrentModuleName()+"/")} {
-				handlersDir := filepath.Join(wd, basePath)
-				if files, err := os.ReadDir(handlersDir); err == nil {
-					for _, file := range files {
-						if !file.IsDir() && strings.HasSuffix(file.Name(), ".go") {
-							possiblePaths = append(possiblePaths, filepath.Join(handlersDir, file.Name()))
-						}
-					}
-				}
-			}
+	// Remove the consumer module prefix to get relative path
+	relativePkgPath := strings.TrimPrefix(pkgPath, consumerModule+"/")
+	if relativePkgPath == pkgPath {
+		// If no prefix was removed, the package might be using a different pattern
+		// Try to extract the relative part differently
+		parts := strings.Split(pkgPath, "/")
+		if len(parts) > 2 {
+			// Skip the first part (likely module domain) and reconstruct
+			relativePkgPath = strings.Join(parts[1:], "/")
+		}
+	}
 
-			// Try all possible paths
-			for _, path := range possiblePaths {
-				if _, err := os.Stat(path); err == nil {
-					return path
-				}
+	// Convert package path to file system path
+	pkgDir := filepath.Join(wd, filepath.FromSlash(relativePkgPath))
+
+	// Strategy 1: Look for .go files in the exact package directory
+	if sourceFile := h.findGoFilesInDirectory(pkgDir); sourceFile != "" {
+		return sourceFile
+	}
+
+	// Strategy 2: Try common handler directory patterns
+	commonPatterns := []string{
+		filepath.Join(wd, "handlers"),
+		filepath.Join(wd, "internal", "handlers"),
+		filepath.Join(wd, "pkg", "handlers"),
+		filepath.Join(wd, "api", "handlers"),
+		filepath.Join(wd, "internal", "api", "handlers"),
+	}
+
+	for _, pattern := range commonPatterns {
+		if sourceFile := h.findGoFilesInDirectory(pattern); sourceFile != "" {
+			return sourceFile
+		}
+	}
+
+	// Strategy 3: Search recursively in common directories (limited depth)
+	commonRoots := []string{
+		filepath.Join(wd, "internal"),
+		filepath.Join(wd, "pkg"),
+		filepath.Join(wd, "cmd"),
+	}
+
+	for _, root := range commonRoots {
+		if sourceFile := h.findGoFilesRecursive(root, 3); sourceFile != "" { // max depth 3
+			return sourceFile
+		}
+	}
+
+	return ""
+}
+
+// findGoFilesInDirectory finds the first .go file in a directory
+func (h *HertzHandlerAnalyzer) findGoFilesInDirectory(dir string) string {
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".go") && !strings.HasSuffix(file.Name(), "_test.go") {
+			return filepath.Join(dir, file.Name())
+		}
+	}
+	return ""
+}
+
+// findGoFilesRecursive searches for .go files recursively with depth limit
+func (h *HertzHandlerAnalyzer) findGoFilesRecursive(root string, maxDepth int) string {
+	if maxDepth <= 0 {
+		return ""
+	}
+
+	// Check current directory first
+	if sourceFile := h.findGoFilesInDirectory(root); sourceFile != "" {
+		return sourceFile
+	}
+
+	// Check subdirectories
+	files, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			subDir := filepath.Join(root, file.Name())
+			if sourceFile := h.findGoFilesRecursive(subDir, maxDepth-1); sourceFile != "" {
+				return sourceFile
 			}
 		}
 	}
@@ -367,14 +633,22 @@ func (h *HertzHandlerAnalyzer) findHandlerSourceFile(handlerFuncName string) str
 	return ""
 }
 
-// analyzeHandlerWithAST analyzes a handler using AST parsing
+// analyzeHandlerWithAST analyzes a handler using AST parsing with error handling
 func (h *HertzHandlerAnalyzer) analyzeHandlerWithAST(sourceFile string, methodName string) analyzer.HandlerSchema {
 	schema := analyzer.HandlerSchema{}
 
-	// Parse the source file
+	// Check if source file exists (Docker-compatible check)
+	if _, err := os.Stat(sourceFile); os.IsNotExist(err) {
+		// Source file not available, return empty schema
+		// This allows fallback mechanisms to take over
+		return schema
+	}
+
+	// Parse the source file with error handling
 	fset := token.NewFileSet()
 	src, err := parser.ParseFile(fset, sourceFile, nil, parser.ParseComments)
 	if err != nil {
+		// Parse error, likely due to missing file or syntax issues
 		return schema
 	}
 
@@ -391,6 +665,7 @@ func (h *HertzHandlerAnalyzer) analyzeHandlerWithAST(sourceFile string, methodNa
 	}
 
 	if methodDecl == nil {
+		// Method not found in this source file
 		return schema
 	}
 
@@ -421,7 +696,7 @@ func (h *HertzHandlerAnalyzer) analyzeHandlerWithAST(sourceFile string, methodNa
 		schema.RequestSchema = reqSchema
 	}
 
-	// Extract response schema from JSON calls (still using old approach for now)
+	// Extract response schema from JSON calls
 	respType := h.extractResponseTypeFromAST(methodDecl)
 	if respType != nil {
 		schema.ResponseSchema = h.schemaGen.GenerateSchemaFromType(respType)
@@ -825,8 +1100,8 @@ func (h *HertzHandlerAnalyzer) resolveTypeFromExpr(expr ast.Expr) reflect.Type {
 	switch e := expr.(type) {
 	case *ast.CompositeLit:
 		// Handle struct literals like dto.RegisterUserRequest{} or &dto.RegisterUserRequest{}
-		if selExpr, ok := e.Type.(*ast.SelectorExpr); ok {
-			return h.resolveTypeFromSelector(selExpr)
+		if _, ok := e.Type.(*ast.SelectorExpr); ok {
+			return h.resolveTypeFromSelector()
 		}
 		if ident, ok := e.Type.(*ast.Ident); ok {
 			return h.resolveLocalType(ident.Name)
@@ -850,7 +1125,7 @@ func (h *HertzHandlerAnalyzer) resolveTypeFromExpr(expr ast.Expr) reflect.Type {
 
 	case *ast.SelectorExpr:
 		// Handle package.Type expressions
-		return h.resolveTypeFromSelector(e)
+		return h.resolveTypeFromSelector()
 
 	case *ast.CallExpr:
 		// Handle function calls that return typed values
@@ -877,7 +1152,7 @@ func (h *HertzHandlerAnalyzer) resolveTypeFromExpr(expr ast.Expr) reflect.Type {
 func (h *HertzHandlerAnalyzer) resolveTypeFromAST(typeExpr ast.Expr) reflect.Type {
 	switch t := typeExpr.(type) {
 	case *ast.SelectorExpr:
-		return h.resolveTypeFromSelector(t)
+		return h.resolveTypeFromSelector()
 	case *ast.Ident:
 		return h.resolveLocalType(t.Name)
 	}
@@ -885,7 +1160,7 @@ func (h *HertzHandlerAnalyzer) resolveTypeFromAST(typeExpr ast.Expr) reflect.Typ
 }
 
 // resolveTypeFromSelector attempts to resolve type from package.Type selector using dynamic AST parsing
-func (h *HertzHandlerAnalyzer) resolveTypeFromSelector(selExpr *ast.SelectorExpr) reflect.Type {
+func (h *HertzHandlerAnalyzer) resolveTypeFromSelector() reflect.Type {
 	// For now, return nil to let the new AST-based approach handle it
 	// This method will be used by the AST-based schema generation instead
 	return nil
@@ -1077,6 +1352,64 @@ func (h *HertzHandlerAnalyzer) extractPackageFromFilePath(filePath string) strin
 	return packagePath
 }
 
+// getModuleFromRuntimeCaller attempts to extract module name from runtime caller info
+// This helps identify the consuming application's module when used as a library
+func (h *HertzHandlerAnalyzer) getModuleFromRuntimeCaller() string {
+	// Walk up the call stack to find the first caller outside our library
+	for i := 1; i < 20; i++ {
+		pc, _, _, ok := runtime.Caller(i)
+		if !ok {
+			break
+		}
+
+		fn := runtime.FuncForPC(pc)
+		if fn == nil {
+			continue
+		}
+
+		funcName := fn.Name()
+		// Skip our own library functions
+		if strings.Contains(funcName, "github.com/zainokta/openapi-gen/") {
+			continue
+		}
+
+		// Extract module name from function name
+		if moduleName := h.extractModuleFromFunctionName(funcName); moduleName != "" {
+			return moduleName
+		}
+	}
+	return ""
+}
+
+// extractModuleFromFunctionName extracts module name from a full function name
+func (h *HertzHandlerAnalyzer) extractModuleFromFunctionName(funcName string) string {
+	// Function name format: module.com/path/package.function or module.com/path/package.(*Type).method
+	parts := strings.Split(funcName, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+
+	// Find the module root (typically domain/org pattern)
+	for i, part := range parts {
+		// Look for domain-like patterns (contains dots)
+		if strings.Contains(part, ".") && i < len(parts)-1 {
+			// Reconstruct module path up to the package level
+			moduleParts := parts[:i+2] // domain.com/org typically
+			potentialModule := strings.Join(moduleParts, "/")
+			
+			// Remove function/method part
+			if dotIdx := strings.Index(potentialModule, "."); dotIdx > 0 {
+				// Check if this looks like a module path
+				if strings.Count(potentialModule[:dotIdx], "/") >= 1 {
+					return potentialModule[:dotIdx]
+				}
+			}
+			return potentialModule
+		}
+	}
+	return ""
+}
+
 // findGoModPath looks for go.mod file in parent directories
 func (h *HertzHandlerAnalyzer) findGoModPath(startDir string) string {
 	dir := startDir
@@ -1166,15 +1499,22 @@ func (h *HertzHandlerAnalyzer) extractPackageFromFunctionName(functionName strin
 	return functionName
 }
 
-// getCurrentModuleName gets the current Go module name dynamically
+// getCurrentModuleName gets the consuming application's Go module name dynamically
+// This is critical for library usage - we need the consumer's module, not our own
 func (h *HertzHandlerAnalyzer) getCurrentModuleName() string {
-	// Get current working directory
+	// First, try to get the module name from runtime caller context
+	// This helps identify the actual application using the library
+	if moduleName := h.getModuleFromRuntimeCaller(); moduleName != "" {
+		return moduleName
+	}
+
+	// Fallback: Get current working directory (consumer's directory)
 	wd, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
 
-	// Find the go.mod file
+	// Find the go.mod file in the consuming application
 	if goModPath := h.findGoModPath(wd); goModPath != "" {
 		return h.getModuleNameFromGoMod(goModPath)
 	}
@@ -1200,41 +1540,125 @@ func (h *HertzHandlerAnalyzer) parseStructFromPackage(packagePath, typeName stri
 	}
 }
 
-// findPackageSourceFiles finds all Go source files in a package directory
+// findPackageSourceFiles finds all Go source files in a package directory for library usage
 func (h *HertzHandlerAnalyzer) findPackageSourceFiles(packagePath string) []string {
 	var sourceFiles []string
 
-	// Get current working directory
+	// Get consumer's working directory
 	wd, err := os.Getwd()
 	if err != nil {
 		return sourceFiles
 	}
 
-	// Try different possible package locations
+	// Get consumer's module name for proper path resolution
+	consumerModule := h.getCurrentModuleName()
+
+	// Strategy 1: Try direct package path resolution
+	relativePath := strings.TrimPrefix(packagePath, consumerModule+"/")
 	possibleDirs := []string{
-		filepath.Join(wd, packagePath),
-		filepath.Join(wd, strings.TrimPrefix(packagePath, h.getCurrentModuleName()+"/")),
+		filepath.Join(wd, filepath.FromSlash(relativePath)),
+		filepath.Join(wd, filepath.FromSlash(packagePath)),
 	}
 
+	// Strategy 2: Try common patterns if direct resolution fails
+	if relativePath != packagePath {
+		// Add more possible locations based on common Go project structures
+		parts := strings.Split(relativePath, "/")
+		if len(parts) > 1 {
+			// Try skipping the first part (internal/pkg/cmd)
+			skippedFirst := strings.Join(parts[1:], "/")
+			possibleDirs = append(possibleDirs, filepath.Join(wd, filepath.FromSlash(skippedFirst)))
+		}
+	}
+
+	// Collect source files from all possible directories
 	for _, dir := range possibleDirs {
-		if files, err := os.ReadDir(dir); err == nil {
-			for _, file := range files {
-				if !file.IsDir() && strings.HasSuffix(file.Name(), ".go") && !strings.HasSuffix(file.Name(), "_test.go") {
-					sourceFiles = append(sourceFiles, filepath.Join(dir, file.Name()))
-				}
+		if files := h.collectGoFilesFromDir(dir); len(files) > 0 {
+			sourceFiles = append(sourceFiles, files...)
+		}
+	}
+
+	// If no files found, try a broader search in common directories
+	if len(sourceFiles) == 0 {
+		sourceFiles = h.findPackageFilesRecursively(wd, packagePath)
+	}
+
+	return sourceFiles
+}
+
+// collectGoFilesFromDir collects all .go files from a directory
+func (h *HertzHandlerAnalyzer) collectGoFilesFromDir(dir string) []string {
+	var files []string
+	dirFiles, err := os.ReadDir(dir)
+	if err != nil {
+		return files
+	}
+
+	for _, file := range dirFiles {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".go") && !strings.HasSuffix(file.Name(), "_test.go") {
+			files = append(files, filepath.Join(dir, file.Name()))
+		}
+	}
+	return files
+}
+
+// findPackageFilesRecursively searches for package files in common directories
+func (h *HertzHandlerAnalyzer) findPackageFilesRecursively(root string, targetPackage string) []string {
+	var sourceFiles []string
+
+	// Extract the last part of the package path as directory name
+	parts := strings.Split(targetPackage, "/")
+	targetDirName := parts[len(parts)-1]
+
+	// Search in common Go project directories
+	commonDirs := []string{
+		filepath.Join(root, "internal"),
+		filepath.Join(root, "pkg"),
+		filepath.Join(root, "cmd"),
+		root, // Also search in root
+	}
+
+	for _, searchRoot := range commonDirs {
+		filepath.WalkDir(searchRoot, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return filepath.SkipDir
 			}
+
+			// Skip if too deep (avoid infinite searches)
+			if strings.Count(strings.TrimPrefix(path, searchRoot), string(filepath.Separator)) > 5 {
+				return filepath.SkipDir
+			}
+
+			if d.IsDir() && d.Name() == targetDirName {
+				// Found a directory with the target name, collect .go files
+				files := h.collectGoFilesFromDir(path)
+				sourceFiles = append(sourceFiles, files...)
+			}
+
+			return nil
+		})
+
+		// Stop searching if we found files
+		if len(sourceFiles) > 0 {
+			break
 		}
 	}
 
 	return sourceFiles
 }
 
-// parseStructFromFile parses a struct definition from a specific source file
+// parseStructFromFile parses a struct definition from a specific source file with Docker compatibility
 func (h *HertzHandlerAnalyzer) parseStructFromFile(sourceFile, typeName string) spec.Schema {
-	// Parse the source file
+	// Check if source file exists (Docker-compatible)
+	if _, err := os.Stat(sourceFile); os.IsNotExist(err) {
+		return spec.Schema{} // File not available, return empty schema
+	}
+
+	// Parse the source file with error handling
 	fset := token.NewFileSet()
 	src, err := parser.ParseFile(fset, sourceFile, nil, parser.ParseComments)
 	if err != nil {
+		// Parse failed, return empty schema to allow fallbacks
 		return spec.Schema{}
 	}
 

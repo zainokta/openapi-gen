@@ -46,12 +46,17 @@ func NewGenerator(framework any, httpServer integration.HTTPServer, options *Opt
 		}
 	}
 
-	// Create components
+	// Create components with configuration
 	pathParser := parser.NewPathParser()
 	overrideManager := NewOverrideManager()
 	structParser := parser.NewStructParser()
 	schemaRegistry := analyzer.NewSchemaRegistry()
 	handlerAnalyzer := integration.NewHertzHandlerAnalyzer()
+
+	// Configure the handler analyzer based on config settings
+	if options.config != nil {
+		handlerAnalyzer.SetConfig(options.config)
+	}
 
 	generator := &Generator{
 		config:          options.config,
@@ -64,6 +69,15 @@ func NewGenerator(framework any, httpServer integration.HTTPServer, options *Opt
 		handlerAnalyzer: handlerAnalyzer,
 	}
 
+	// Load static schemas if configured
+	if options.config != nil && options.config.SchemaDir != "" {
+		if err := generator.schemaRegistry.LoadStaticSchemas(options.config.SchemaDir); err != nil {
+			generator.logger.Warn("Failed to load static schemas", "error", err, "schema_dir", options.config.SchemaDir)
+		} else {
+			generator.logger.Info("Loaded static schemas", "schema_dir", options.config.SchemaDir)
+		}
+	}
+
 	// Initialize common DTO schemas
 	generator.structParser.RegisterDTOSchemas()
 	generator.schemaRegistry.RegisterCommonDTOs()
@@ -74,16 +88,6 @@ func NewGenerator(framework any, httpServer integration.HTTPServer, options *Opt
 // GetOverrideManager returns the override manager for customization
 func (g *Generator) GetOverrideManager() *OverrideManager {
 	return g.overrideManager
-}
-
-// GetSchemaRegistry returns the schema registry for manual schema registration
-func (g *Generator) GetSchemaRegistry() *analyzer.SchemaRegistry {
-	return g.schemaRegistry
-}
-
-// GetLogger returns the configured logger instance
-func (g *Generator) GetLogger() logger.Logger {
-	return g.logger
 }
 
 // GenerateSpec generates the complete OpenAPI specification
@@ -165,17 +169,27 @@ func (g *Generator) GenerateSpec() (*spec.OpenAPISpec, error) {
 
 // processRoute processes a single route and adds it to the OpenAPI spec
 func (g *Generator) processRoute(route spec.RouteInfo, tags map[string]bool) error {
-	// Analyze handler to extract request/response types
-	if route.Handler != nil {
-		handlerSchema := g.handlerAnalyzer.AnalyzeHandler(route.Handler)
+	var handlerSchema analyzer.HandlerSchema
 
-		// Register the discovered schemas with the schema registry
-		if handlerSchema.RequestSchema.Type != "" {
-			g.schemaRegistry.RegisterRequestSchema(route.Method, route.Path, handlerSchema.RequestSchema)
+	// First, try to get pre-registered schema by handler name
+	if route.HandlerName != "" {
+		if preRegisteredSchema, exists := g.schemaRegistry.GetHandlerSchema(route.HandlerName); exists {
+			handlerSchema = preRegisteredSchema
+			g.logger.Info("Using pre-registered schema", "handler", route.HandlerName)
 		}
-		if handlerSchema.ResponseSchema.Type != "" {
-			g.schemaRegistry.RegisterResponseSchema(route.Method, route.Path, handlerSchema.ResponseSchema)
-		}
+	}
+
+	// If no pre-registered schema found, try to analyze the handler
+	if (handlerSchema.RequestSchema.Type == "" && handlerSchema.ResponseSchema.Type == "") && route.Handler != nil {
+		handlerSchema = g.handlerAnalyzer.AnalyzeHandler(route.Handler)
+	}
+
+	// Register the discovered schemas with the schema registry
+	if handlerSchema.RequestSchema.Type != "" {
+		g.schemaRegistry.RegisterRequestSchema(route.Method, route.Path, handlerSchema.RequestSchema)
+	}
+	if handlerSchema.ResponseSchema.Type != "" {
+		g.schemaRegistry.RegisterResponseSchema(route.Method, route.Path, handlerSchema.ResponseSchema)
 	}
 
 	// Parse route using algorithm
