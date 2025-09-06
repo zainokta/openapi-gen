@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"maps"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -148,14 +149,10 @@ func (g *Generator) GenerateSpec() (*spec.OpenAPISpec, error) {
 	allSchemas := make(map[string]spec.Schema)
 
 	// Add schemas from struct parser (basic types)
-	for name, schema := range g.structParser.GetSchemas() {
-		allSchemas[name] = schema
-	}
+	maps.Copy(allSchemas, g.structParser.GetSchemas())
 
 	// Add schemas from schema registry (handler DTOs)
-	for name, schema := range g.schemaRegistry.GetAllSchemas() {
-		allSchemas[name] = schema
-	}
+	maps.Copy(allSchemas, g.schemaRegistry.GetAllSchemas())
 
 	g.spec.Components.Schemas = allSchemas
 
@@ -335,12 +332,11 @@ func (g *Generator) extractParameters(path string) []spec.Parameter {
 func (g *Generator) generateResponses(route spec.RouteInfo) map[string]spec.Response {
 	responses := make(map[string]spec.Response)
 
-	// Try to get schema from handler analysis
-	handlerSchema := g.handlerAnalyzer.AnalyzeHandler(route.Handler)
-
+	// Get response schema from registry
 	var successSchema spec.Schema
-	if handlerSchema.ResponseSchema.Type != "" {
-		successSchema = handlerSchema.ResponseSchema
+	if _, exists := g.schemaRegistry.GetResponseSchema(route.Method, route.Path); exists {
+		// Use schema reference instead of inline schema
+		successSchema = g.generateSchemaReference(route.Method, route.Path, "response")
 	} else {
 		// Fallback to generic success schema
 		successSchema = spec.Schema{
@@ -439,12 +435,11 @@ func (g *Generator) getErrorSchema() spec.Schema {
 
 // generateRequestBodyFromRoute generates request body using dynamic schema resolution
 func (g *Generator) generateRequestBodyFromRoute(route spec.RouteInfo) spec.RequestBody {
-	// Try to get schema from handler analysis
-	handlerSchema := g.handlerAnalyzer.AnalyzeHandler(route.Handler)
-
+	// Get request schema from registry
 	var schema spec.Schema
-	if handlerSchema.RequestSchema.Type != "" {
-		schema = handlerSchema.RequestSchema
+	if _, exists := g.schemaRegistry.GetRequestSchema(route.Method, route.Path); exists {
+		// Use schema reference instead of inline schema
+		schema = g.generateSchemaReference(route.Method, route.Path, "request")
 	} else {
 		// Fallback to generic schema
 		schema = spec.Schema{
@@ -504,6 +499,28 @@ func (g *Generator) isPublicEndpoint(path string) bool {
 func (g *Generator) generateOperationID(method, path string) string {
 	// Use path parser to generate consistent ID
 	return g.pathParser.GenerateHandlerName(method, path)
+}
+
+// generateSchemaReference creates a schema reference for registered schemas
+func (g *Generator) generateSchemaReference(method, path, schemaType string) spec.Schema {
+	// Create route key same as schema registry
+	routeKey := strings.ToUpper(method) + " " + path
+	
+	// Generate schema name using same logic as schema registry
+	cleanKey := strings.ReplaceAll(routeKey, " ", "")
+	cleanKey = strings.ReplaceAll(cleanKey, "/", "_")
+	cleanKey = strings.ReplaceAll(cleanKey, ":", "")
+	
+	// Capitalize first letter
+	if len(cleanKey) > 0 {
+		cleanKey = strings.ToUpper(cleanKey[:1]) + cleanKey[1:]
+	}
+	
+	schemaName := cleanKey + schemaType
+	
+	return spec.Schema{
+		Ref: "#/components/schemas/" + schemaName,
+	}
 }
 
 // addOperationToSpec adds an operation to the OpenAPI spec
