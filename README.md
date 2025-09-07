@@ -1,6 +1,6 @@
 # OpenAPI Generator for Go Web Frameworks
 
-[![Go Version](https://img.shields.io/badge/Go-%3E%3D1.21-blue)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-%3E%3D1.25-blue)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A powerful, framework-agnostic OpenAPI documentation generator for Go web applications. Automatically generates comprehensive OpenAPI 3.0.3 specifications from your route definitions with intelligent AST analysis, Docker support, and flexible customization options. Works seamlessly as a library in any Go application with production-ready fallback mechanisms.
@@ -29,6 +29,8 @@ go get github.com/zainokta/openapi-gen
 
 ### Basic Usage
 
+#### CloudWeGo Hertz
+
 ```go
 package main
 
@@ -52,6 +54,34 @@ func main() {
     }
     
     h.Spin()
+}
+```
+
+#### Gin
+
+```go
+package main
+
+import (
+    "github.com/gin-gonic/gin"
+    "github.com/zainokta/openapi-gen"
+    "github.com/zainokta/openapi-gen/integration"
+)
+
+func main() {
+    r := gin.Default()
+    
+    // Add your routes here
+    r.GET("/api/v1/users", getUsersHandler)
+    r.POST("/api/v1/users", createUserHandler)
+    
+    // Enable OpenAPI documentation with proper library usage
+    err := openapi.EnableDocs(r, integration.NewGinServerAdapter(r))
+    if err != nil {
+        panic(err)
+    }
+    
+    r.Run()
 }
 ```
 
@@ -85,7 +115,7 @@ Include schema files in your Docker build:
 
 ```dockerfile
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN go mod download
@@ -117,7 +147,7 @@ For production environments where source code is not available, use `go:generate
 Add annotations to your handlers to specify request and response types:
 
 ```go
-//go:generate openapi-gen -request dto.LoginRequest -response dto.AuthResponse -handler LoginHandler .
+//go:generate openapi-gen -request dto.LoginRequest -response dto.AuthResponse -handler Login .
 func (c *authController) Login(ctx context.Context, c *app.RequestContext) {
     var req dto.LoginRequest
     if err := c.BindAndValidate(&req); err != nil {
@@ -130,7 +160,7 @@ func (c *authController) Login(ctx context.Context, c *app.RequestContext) {
     c.JSON(200, resp)
 }
 
-//go:generate openapi-gen -response dto.UserResponse -handler GetUserHandler .
+//go:generate openapi-gen -response dto.UserResponse -handler GetUser .
 func (c *userController) GetUser(ctx context.Context, c *app.RequestContext) {
     userID := c.Param("id")
     
@@ -139,7 +169,7 @@ func (c *userController) GetUser(ctx context.Context, c *app.RequestContext) {
     c.JSON(200, user)
 }
 
-//go:generate openapi-gen -request dto.CreateUserRequest -handler CreateUserHandler .
+//go:generate openapi-gen -request dto.CreateUserRequest -handler CreateUser .
 func (c *userController) CreateUser(ctx context.Context, c *app.RequestContext) {
     var req dto.CreateUserRequest
     if err := c.BindAndValidate(&req); err != nil {
@@ -201,7 +231,7 @@ Options:
 openapi-gen -verbose -output ./api-schemas handlers/*.go
 
 # Generate specific handler schema
-openapi-gen -request dto.LoginRequest -response dto.AuthResponse -handler LoginHandler . handlers/auth.go
+openapi-gen -request dto.LoginRequest -response dto.AuthResponse -handler Login . handlers/auth.go
 
 # Generate all schemas in project
 go generate ./...
@@ -402,9 +432,9 @@ openapi.EnableDocs(framework, integration.NewHertzServerAdapter(framework),
 
 ### Currently Supported
 - ✅ **CloudWeGo Hertz** - Full auto-detection support
+- ✅ **Gin** - Full auto-detection support
 
 ### Coming Soon
-- 🔄 **Gin** - Interface ready, implementation planned
 - 🔄 **Echo** - Interface ready, implementation planned  
 - 🔄 **Fiber** - Interface ready, implementation planned
 - 🔄 **Chi** - Interface ready, implementation planned
@@ -428,7 +458,7 @@ When source files aren't available, the generator uses fallback schemas.
 1. **Use go:generate annotations** (recommended):
    ```go
    // Add annotations to your handlers
-   //go:generate openapi-gen -request dto.CreateUserRequest -response dto.UserResponse -handler CreateUserHandler .
+   //go:generate openapi-gen -request dto.CreateUserRequest -response dto.UserResponse -handler CreateUser .
    func (c *userController) CreateUser(ctx context.Context, c *app.RequestContext) {
        // Handler implementation
    }
@@ -443,7 +473,7 @@ When source files aren't available, the generator uses fallback schemas.
 2. **Include schema files in Docker builds**:
    ```dockerfile
    # Build stage
-   FROM golang:1.21-alpine AS builder
+   FROM golang:1.25-alpine AS builder
    WORKDIR /app
    COPY . .
    RUN go mod download
@@ -492,7 +522,8 @@ We welcome contributions! Please see our contributing guidelines for details.
 - [x] **Library Usage Improvements** - Cross-package AST analysis and configuration options  
 - [x] **AST-based Schema Generation** - Automatic request/response schema extraction
 - [x] **go:generate Schema Generation** - Compile-time schema generation for production
-- [ ] Additional framework integrations (Gin, Echo, Fiber, Chi)
+- [x] **Gin Framework Support** - Complete integration with Gin framework
+- [ ] Additional framework integrations (Echo, Fiber, Chi)
 - [ ] Plugin system for custom analyzers
 - [ ] OpenAPI 3.1 support
 - [ ] Performance optimizations for large APIs

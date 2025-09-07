@@ -122,7 +122,7 @@ For production environments where source code is not available, use `go:generate
 Add annotations to your handlers to specify request and response types:
 
 ```go
-//go:generate openapi-gen -request dto.LoginRequest -response dto.AuthResponse
+//go:generate openapi-gen -request dto.LoginRequest -response dto.AuthResponse -handler Login .
 func (c *authController) Login(ctx context.Context, c *app.RequestContext) {
     var req dto.LoginRequest
     if err := c.BindAndValidate(&req); err != nil {
@@ -135,7 +135,7 @@ func (c *authController) Login(ctx context.Context, c *app.RequestContext) {
     c.JSON(200, resp)
 }
 
-//go:generate openapi-gen -response dto.UserResponse
+//go:generate openapi-gen -response dto.UserResponse -handler GetUser .
 func (c *userController) GetUser(ctx context.Context, c *app.RequestContext) {
     userID := c.Param("id")
     
@@ -144,7 +144,7 @@ func (c *userController) GetUser(ctx context.Context, c *app.RequestContext) {
     c.JSON(200, user)
 }
 
-//go:generate openapi-gen -request dto.CreateUserRequest
+//go:generate openapi-gen -request dto.CreateUserRequest -handler CreateUser .
 func (c *userController) CreateUser(ctx context.Context, c *app.RequestContext) {
     var req dto.CreateUserRequest
     if err := c.BindAndValidate(&req); err != nil {
@@ -348,7 +348,7 @@ err := openapi.EnableDocs(customFramework, httpServer,
 1. **Use go:generate annotations** (recommended):
    ```go
    // Add annotations to your handlers
-   //go:generate openapi-gen -request dto.LoginRequest -response dto.AuthResponse
+   //go:generate openapi-gen -request dto.LoginRequest -response dto.AuthResponse -handler Login .
    func (c *authController) Login(ctx context.Context, c *app.RequestContext) {
        // Handler implementation
    }
@@ -363,7 +363,7 @@ err := openapi.EnableDocs(customFramework, httpServer,
 2. **Include schema files in Docker builds**:
    ```dockerfile
    # Build stage
-   FROM golang:1.21-alpine AS builder
+   FROM golang:1.25-alpine AS builder
    WORKDIR /app
    COPY . .
    RUN go mod download
